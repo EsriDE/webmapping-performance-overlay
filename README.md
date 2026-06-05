@@ -147,6 +147,11 @@ Try the performance overlay directly in your browser:
    - idle view → observe stable frame timing
 5. Use the **Export JSON** button to download performance data
 
+⚠️ **Important:**  
+For meaningful results, ensure the view renders at least **~30 frames**.  
+Until then, the overlay displays *"Warming up..."*  
+Very small views or short interactions may lead to unstable or non-representative metrics.
+
 ---
 
 ## 💡 What to look for
