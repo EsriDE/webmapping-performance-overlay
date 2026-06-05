@@ -124,6 +124,61 @@ Classification is based on heuristics and should be interpreted as a guideline, 
 
 ---
 
+## 🚀 Live Samples
+
+Try the performance overlay directly in your browser:
+
+👉 [Web GL 2.0 Overlay sample](https://esride.github.io/webmapping-performance-overlay/webgl/)
+
+---
+
+## 🧪 How to use the sample
+
+1. Open the demo link above
+2. Interact with the map:
+   - zoom in/out
+   - pan around
+3. Observe the overlay in the top corner:
+   - FPS and frame timings
+   - p50 / p95 / p99 values
+   - environment classification
+4. Trigger different scenarios:
+   - rapid zoom → observe spikes (p99)
+   - idle view → observe stable frame timing
+5. Use the **Export JSON** button to download performance data
+
+---
+
+## 💡 What to look for
+
+- ✅ **Stable system**
+  - p50 ≈ 16–17 ms
+  - p95 < 20 ms
+  - smooth interaction
+
+- ⚠️ **Under load**
+  - higher p95 during zoom
+  - occasional p99 spikes
+
+- ❌ **Constrained environments (e.g. VDI)**
+  - high p50 (>100 ms)
+  - very high p95/p99
+  - low FPS
+
+---
+
+## 🔍 Tip
+
+Open the same sample in different environments to compare performance:
+
+- local workstation
+- virtual desktop (VDI)
+- low-end devices
+
+This makes it easy to identify rendering bottlenecks and environment constraints.
+
+---
+
 ## 🚀 Getting started
 
 1. Add the custom layer / layer view to your map
