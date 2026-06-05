@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>Performance Overlay</title>
+
+    <link rel="stylesheet" href="https://js.arcgis.com/4.34/esri/themes/light/main.css" />
+
+    <style>
+        html,
+        body,
+        #viewDiv {
+            padding: 0;
+            margin: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        .export-btn {
+            position: absolute;
+            top: 30px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.6);
+            color: white;
+            font-family: monospace;
+            padding: 10px 12px;
+            border-radius: 8px;
+            z-index: 99;
+            font-size: 13px;
+            line-height: 1.4;
+            cursor: pointer;
+        }
+
+        /* Optional: overlay styling */
+        .perf-overlay {
+            position: absolute;
+            bottom: 30px;
+            right: 10px;
+            background: rgba(0, 0,   0, 0.6);
+            color: white;
+            font-family: monospace;
+            padding: 10px 12px;
+            border-radius: 8px;
+            z-index: 99;
+            font-size: 13px;
+            line-height: 1.4;
+            pointer-events: none;
+        }
+
+        .perf-table {
+            border-collapse: collapse;
+            font-family: monospace;
+            font-size: 13px;
+            color: white;
+        }
+
+        .perf-table td {
+            padding: 2px 8px;
+        }
+
+        /* Left column = labels */
+        .perf-table td:first-child {
+            text-align: left;
+            opacity: 0.85;
+        }
+
+        /* Right column = numbers */
+        .perf-table td:last-child {
+            text-align: right;
+            min-width: 70px;
+            font-variant-numeric: tabular-nums;
+        }
+
+    </style>
+</head>
+
+<body>
+    <div id="viewDiv"></div>
+    <div id="overlay" class="perf-overlay">Initializing...</div>
+    
+    <button id="exportBtn" class="export-btn">Export Stats</button>
+
+    <script src="https://js.arcgis.com/4.34/"></script>
+
+    <script>
+        require([
+            "esri/Map",
+            "esri/views/MapView",
+            "esri/layers/BaseTileLayer",
+            "esri/layers/support/TileInfo",
+            "esri/views/2d/layers/BaseLayerView2D"
+        ], function (
+            Map,
+            MapView,
+            BaseTileLayer,
+            TileInfo,
+            BaseLayerView2D
+        ) {
+
+            // -------------------------------
+            // Custom LayerView with metrics
+            // -------------------------------
+
+            const TileBorderLayerView2D = BaseLayerView2D.createSubclass({
+
+                initialize() {
+                    this._frameTimes = [];
+                    this._renderTimes = [];
+                    this._maxSamples = 300;
+                    this._lastReport = performance.now();
+                    this._lastStats = null;
+                    this._log = [];
+                    this._lastFrameTs = performance.now();
+                },
+
+                render(renderParameters) {
+                    // Measure real frame interval                    
+                    const now = performance.now();
+                    const frameDelta = now - this._lastFrameTs;
+                    this._lastFrameTs = now;
+
+                    // Measure render cost separately
+                    const renderStart = performance.now();
+
+                    const tileSize = this.layer.tileInfo.size[0];
+                    const state = renderParameters.state;
+                    const pixelRatio = state.pixelRatio;
+                    const width = state.size[0];
+                    const height = state.size[1];
+                    const context = renderParameters.context;
+
+                    const coords = [0, 0];
+
+                    // background
+                    context.fillStyle = "rgba(0,0,0,0.25)";
+                    context.fillRect(0, 0, width * pixelRatio, height * pixelRatio);
+
+                    // rotation
+                    if (state.rotation !== 0) {
+                        context.translate(width * pixelRatio / 2, height * pixelRatio / 2);
+                        context.rotate(state.rotation * Math.PI / 180);
+                        context.translate(-width * pixelRatio / 2, -height * pixelRatio / 2);
+                    }
+
+                    let tileCount = 0;
+
+                    for (const tile of this.tiles) {
+                        tileCount++;
+
+                        const screenScale = tile.resolution / state.resolution * pixelRatio;
+                        state.toScreenNoRotation(coords, tile.coords);
+
+                        context.strokeStyle = "white";
+                        context.strokeRect(
+                            coords[0],
+                            coords[1],
+                            tileSize * screenScale,
+                            tileSize * screenScale
+                        );
+                    }
+
+                    const renderTime = performance.now() - renderStart;
+                    this._recordFrame(frameDelta, renderTime);
+
+                    const t = performance.now();
+                    if (t - this._lastReport > 1000) {
+                        this._lastStats = this._computeStats(tileCount);
+                                                
+                        this._log.push({
+                            time: new Date().toISOString(),
+                            fps: this._lastStats.fps,
+                            avgFrame: this._lastStats.avgFrame,
+                            p50: this._lastStats.p50,
+                            p95: this._lastStats.p95,
+                            p99: this._lastStats.p99,
+                            //avgRender: this._lastStats.avgRender,
+                            tiles: this._lastStats.tiles,
+                            env: this._lastStats.env,
+                            envLabel: this._lastStats.envInfo.label,
+                            envDescription: this._lastStats.envInfo.description
+                        });
+
+                        this._updateOverlay();
+                        this._lastReport = t;
+                    }
+                },
+
+                _recordFrame(frameDelta, renderTime) {
+                    this._frameTimes.push(frameDelta);
+                    this._renderTimes.push(renderTime);
+
+                    if (this._frameTimes.length > this._maxSamples) {
+                        this._frameTimes.shift();
+                        this._renderTimes.shift();
+                    }
+                },
+
+                _describeClassification(envLabel) {
+                    const ENV_DESCRIPTIONS = {
+                        EXCELLENT: {
+                            label: "Excellent",
+                            color: "#22c55e",
+                            description: "Smooth rendering at vsync. No perceptible lag or jitter. Suitable for all interactive workloads."
+                        },
+
+                        GOOD: {
+                            label: "Good",
+                            color: "#84cc16",
+                            description: "Minor frame variance. Interaction is fluid. Occasional minor stutter may occur under load but overall experience is solid."
+                        },
+
+                        DEGRADED: {
+                            label: "Degraded",
+                            color: "#f59e0b",
+                            description: "Noticeable frame drops and jitter. Interaction feels inconsistent. Suitable for light use only. Typical of constrained GPU or mild virtualization overhead."
+                        },
+
+                        POOR: {
+                            label: "Poor",
+                            color: "#f97316",
+                            description: "Severe stuttering and lag. Interaction is difficult. Often caused by lack of GPU acceleration or heavy virtualization throttling."
+                        },
+
+                        BROKEN: {
+                            label: "Broken",
+                            color: "#ef4444",
+                            description: "Rendering loop is effectively stalled. Frames delayed by hundreds or thousands of milliseconds. Not usable for any interactive scenario. Typical of extreme VDI throttling or blocked UI thread."
+                        }
+                    };
+
+                    return ENV_DESCRIPTIONS[envLabel]
+                },
+
+                _classifyStats(stats) {
+                    const p50 = parseFloat(stats.p50);
+                    const p95 = parseFloat(stats.p95);
+                    const p99 = parseFloat(stats.p99);
+
+                    if (p50 <= 20 && p95 < 25 /*&& p99 < 40*/) {
+                        return "EXCELLENT";
+                    }
+
+                    if (p50 <= 25 && p95 < 50 /*&& p99 < 100*/) {
+                        return "GOOD";
+                    }
+
+                    if (p50 <= 50 && p95 < 150 /*&& p99 < 300*/) {
+                        return "DEGRADED";
+                    }
+
+                    if (p50 <= 200 && p95 < 500 /*&& p99 < 1000*/) {
+                        return "POOR";
+                    }
+
+                    return "BROKEN";
+                },
+
+                _classifyStatsSmoothed(stats, count) {
+                    if (!this._log.length) return this._classifyStats(stats);
+
+                    const recent = this._log.slice(-count);
+
+                    let sumP50 = 0;
+                    let sumP95 = 0;
+                    let sumP99 = 0;
+
+                    for (const entry of recent) {
+                        sumP50 += parseFloat(entry.p50);
+                        sumP95 += parseFloat(entry.p95);
+                        sumP99 += parseFloat(entry.p99);
+                    }
+
+                    const p50 = (sumP50 + parseFloat(stats.p50)) / (recent.length + 1);
+                    const p95 = (sumP95 + parseFloat(stats.p95)) / (recent.length + 1);
+                    const p99 = (sumP99 + parseFloat(stats.p99)) / (recent.length + 1);
+
+                    return this._classifyStats({
+                        p50: p50,
+                        p95: p95,
+                        p99: p99
+                    });
+                },
+
+                _computeStats(tileCount) {
+                    const samples = this._frameTimes.slice().sort((a, b) => a - b);
+
+                    const percentile = (p) => {
+                        if (samples.length === 0) return 0;
+                        const idx = Math.floor((p / 100) * samples.length);
+                        return samples[Math.min(idx, samples.length - 1)];
+                    };
+
+                    const avgFrame = samples.reduce((s, v) => s + v, 0) / samples.length;
+                    const fps = avgFrame > 0 ? 1000 / avgFrame : 0;
+                    
+                    let avgRender = 0;
+                    if (this._renderTimes.length) {
+                        avgRender = this._renderTimes.reduce((s, v) => s + v, 0) / this._renderTimes.length;
+                    }
+
+                    const stats = {
+                        fps: fps.toFixed(0),
+                        avgFrame: avgFrame.toFixed(0),
+                        p50: percentile(50).toFixed(0),
+                        p95: percentile(95).toFixed(0),
+                        p99: percentile(99).toFixed(0),
+                        //avgRender: avgRender.toFixed(2),
+                        tiles: tileCount,
+                        samples: samples.length
+                    };
+
+                    // Classfication of stats
+                    const MIN_FRAMES_FOR_CLASSIFICATION = 30;                    
+                    if (samples.length < MIN_FRAMES_FOR_CLASSIFICATION) {
+                        stats.env = "WARMUP";
+                        stats.envInfo = {
+                            label: "Warming up...",
+                            color: "#6b7280",
+                            description: `Collecting performance data (${samples.length}/${MIN_FRAMES_FOR_CLASSIFICATION} frames). Classification will stabilize shortly.`
+                        } 
+                    }
+                    else {
+                        //const LOG_ENTRIES_COUNT = MIN_FRAMES_FOR_CLASSIFICATION;
+                        const classification = this._classifyStats(stats);
+                        //const classification = this._classifyStatsSmoothed(stats, LOG_ENTRIES_COUNT);
+                        stats.env = classification;
+                        stats.envInfo = this._describeClassification(classification);
+                    }
+
+                    return stats;
+                },
+
+                _updateOverlay() {
+                    const el = document.getElementById("overlay");
+                    const s = this._lastStats;
+
+                    if (!s) return;
+
+                    const env = s.envInfo;
+                                    
+                    el.innerHTML = `
+                        <div style="margin-bottom:6px;">
+                        <strong style="color:${env.color}">
+                            ${env.label}
+                        </strong>
+                        </div>
+
+                        <table class="perf-table">
+                        <tr><td>FPS</td><td>${s.fps}</td></tr>
+                        <tr><td>Frame avg</td><td>${s.avgFrame} ms</td></tr>
+                        <tr><td>p50</td><td>${s.p50} ms</td></tr>
+                        <tr><td>p95</td><td>${s.p95} ms</td></tr>
+                        <tr><td>p99</td><td>${s.p99} ms</td></tr>
+                        <!--<tr><td>Render avg</td><td>${s.avgRender} ms</td></tr>-->
+                        <tr><td>Tiles</td><td>${s.tiles}</td></tr>
+                        </table>
+                    `;
+
+                },
+
+                exportStats() {
+                    if (!this._log.length) return;
+
+                    const statsContent = JSON.stringify(this._log, null, 2)
+
+                    const blob = new Blob([statsContent], { type: "application/json;charset=utf-8;" });
+                    const url = URL.createObjectURL(blob);
+
+                    const link = document.createElement("a");
+                    link.href = url;
+                    link.download = "arcgis_perf_stats.json";
+                    link.click();
+
+                    URL.revokeObjectURL(url);
+                }
+
+            });
+
+            // -------------------------------
+            // Custom Tile Layer
+            // -------------------------------
+
+            const CustomTileLayer = BaseTileLayer.createSubclass({
+
+                tileInfo: TileInfo.create({
+                    spatialReference: { wkid: 3857 }
+                }),
+
+                createLayerView(view) {
+                    if (view.type === "2d") {
+                        return new TileBorderLayerView2D({
+                            view: view,
+                            layer: this
+                        });
+                    }
+                }
+
+            });
+
+            // -------------------------------
+            // Map setup
+            // -------------------------------
+
+            const layer = new CustomTileLayer();
+
+            const map = new Map({
+                basemap: "satellite",
+                layers: [
+                    layer
+                ]
+            });
+
+            const view = new MapView({
+                container: "viewDiv",
+                map: map,
+                center: [7.1, 50.7], // Bonn
+                zoom: 10
+            });
+
+            // -------------------------------
+            // Debug output
+            // -------------------------------
+
+            view.when(() => {
+                const canvas = document.createElement("canvas");
+                const gl =
+                    canvas.getContext("webgl") ||
+                    canvas.getContext("experimental-webgl");
+
+                console.log("WebGL supported:", !!gl);
+
+                view.whenLayerView(layer).then((layerView) => {
+                    document.getElementById("exportBtn").onclick = () => {
+                        if (layerView && layerView.exportStats) {
+                            layerView.exportStats();
+                        }
+                    };
+                });
+            });
+
+        });
+    </script>
+</body>
+
+</html>
