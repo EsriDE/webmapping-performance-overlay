@@ -235,9 +235,22 @@
             tiles: getVisibleTileCount()
         };
 
-        const classification = classifyStats(stats);
-        stats.env = classification;
-        stats.envInfo = describeClassification(classification);
+         // Classfication of stats
+        const MIN_FRAMES_FOR_CLASSIFICATION = 30;                    
+        if (frameTimes.length < MIN_FRAMES_FOR_CLASSIFICATION) {
+            stats.env = "WARMUP";
+            stats.envInfo = {
+                label: "Warming up...",
+                color: "#6b7280",
+                description: `Collecting performance data (${frameTimes.length}/${MIN_FRAMES_FOR_CLASSIFICATION} frames). Classification will stabilize shortly.`
+            } 
+        }
+        else {
+            const classification = classifyStats(stats);
+            stats.env = classification;
+            stats.envInfo = describeClassification(classification);
+        }
+
         return stats;
     }
 
