@@ -128,7 +128,8 @@ Classification is based on heuristics and should be interpreted as a guideline, 
 
 Try the performance overlay directly in your browser:
 
-👉 [Web GL 2.0 Overlay sample](https://esride.github.io/webmapping-performance-overlay/webgl/)
+👉 [Web GL 2.0 Overlay sample](https://esride.github.io/webmapping-performance-overlay/webgl/)  
+👉 [Leaflet Overlay sample](https://esride.github.io/webmapping-performance-overlay/leaflet/)
 
 ---
 
@@ -151,6 +152,22 @@ Try the performance overlay directly in your browser:
 For meaningful results, ensure the view renders at least **~30 frames**.  
 Until then, the overlay displays *"Warming up..."*  
 Very small views or short interactions may lead to unstable or non-representative metrics.
+
+The Esri Leaflet implementation is conceptually comparable to the ArcGIS Maps SDK sample, but the measurements are not mathematically identical.
+
+| Framework | Measurement Source |
+|---|---|
+| ArcGIS Maps SDK | Internal renderer loop |
+| Leaflet | Browser animation frame cadence |
+
+Because Leaflet relies on browser-driven rendering:
+- FPS values are observational
+- frame timings are approximate
+- classifications are heuristic-based
+
+The overlay measures perceived interaction responsiveness rather than direct renderer workload timing.
+
+This distinction is important when comparing metrics across frameworks.
 
 ---
 

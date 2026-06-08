@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <title>Leaflet Tile Performance Overlay</title>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+
+  <style>
+    html,
+    body,
+    #map {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .perf-overlay {
+      position: absolute;
+      bottom: 30px;
+      right: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      font-family: monospace;
+      padding: 10px 12px;
+      border-radius: 8px;
+      z-index: 1000;
+      font-size: 13px;
+      line-height: 1.4;
+      pointer-events: none;
+    }
+
+    .perf-table {
+      border-collapse: collapse;
+      font-family: monospace;
+      font-size: 13px;
+      color: white;
+    }
+
+    .perf-table td {
+      padding: 2px 8px;
+    }
+
+    .perf-table td:first-child {
+      text-align: left;
+      opacity: 0.85;
+    }
+
+    .perf-table td:last-child {
+      text-align: right;
+      min-width: 70px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .export-btn {
+      position: absolute;
+      top: 30px;
+      right: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      border: none;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-family: monospace;
+      cursor: pointer;
+      z-index: 1000;
+    }
+
+    .tile-label {
+      color: red;
+      font-size: 10px;
+      font-family: monospace;
+      font-weight: bold;
+      text-shadow: 0 0 3px black;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <div id="overlay" class="perf-overlay">
+    Initializing...
+  </div>
+
+  <button id="exportBtn" class="export-btn">
+    Export Stats
+  </button>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/esri-leaflet@3.0.14/dist/esri-leaflet.js"></script>
+
+  <script>
+    // ------------------------------------------------------------
+    // Map setup
+    // ------------------------------------------------------------
+
+    const map = L.map("map", {
+      preferCanvas: true
+    }).setView([50.7, 7.1], 10);
+
+    // Base imagery
+    L.esri.basemapLayer("Imagery").addTo(map);
+
+    // Debug layer
+    const debugLayer = L.layerGroup().addTo(map);
+
+    // Monitored tiled layer
+    const layer = L.esri.tiledMapLayer({
+      url:
+        "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer"
+    }).addTo(map);
+
+    // ------------------------------------------------------------
+    // Metrics state
+    // ------------------------------------------------------------
+
+    const statsLog = [];
+
+    const frameTimes = [];
+    const tileLatencies = [];
+
+    const MAX_SAMPLES = 300;
+
+    const tileRequests = new Map();
+
+    let visibleTileCount = 0;
+
+    let lastFrame = performance.now();
+    let lastReport = performance.now();
+
+    // ------------------------------------------------------------
+    // Frame monitoring
+    // ------------------------------------------------------------
+
+    function frameLoop(timestamp) {
+      const delta = timestamp - lastFrame;
+      lastFrame = timestamp;
+
+      frameTimes.push(delta);
+
+      if (frameTimes.length > MAX_SAMPLES) {
+        frameTimes.shift();
+      }
+
+      requestAnimationFrame(frameLoop);
+    }
+
+    requestAnimationFrame(frameLoop);
+
+    // ------------------------------------------------------------
+    // Tile monitoring
+    // ------------------------------------------------------------
+
+    layer.on("tileloadstart", (e) => {
+      const key = tileKey(e.coords);
+
+      tileRequests.set(key, {
+        start: performance.now()
+      });
+    });
+
+    layer.on("tileload", (e) => {
+      const key = tileKey(e.coords);
+
+      const entry = tileRequests.get(key);
+
+      if (!entry) {
+        return;
+      }
+
+      const duration = performance.now() - entry.start;
+
+      tileLatencies.push(duration);
+
+      if (tileLatencies.length > MAX_SAMPLES) {
+        tileLatencies.shift();
+      }
+
+      tileRequests.delete(key);
+    });
+
+    layer.on("loading", () => {
+      visibleTileCount = 0;
+    });
+
+    function classifyStats(stats) {
+        const p50 = parseFloat(stats.p50);
+        const p95 = parseFloat(stats.p95);
+        const p99 = parseFloat(stats.p99);
+
+        if (p50 <= 20 && p95 < 25 /*&& p99 < 40*/) {
+            return "EXCELLENT";
+        }
+
+        if (p50 <= 25 && p95 < 50 /*&& p99 < 100*/) {
+            return "GOOD";
+        }
+
+        if (p50 <= 50 && p95 < 150 /*&& p99 < 300*/) {
+            return "DEGRADED";
+        }
+
+        if (p50 <= 200 && p95 < 500 /*&& p99 < 1000*/) {
+            return "POOR";
+        }
+
+        return "BROKEN";
+    }
+
+    function computeStats() {
+        const avgFrame = average(frameTimes);
+
+        const fps =
+            avgFrame > 0
+                ? 1000 / avgFrame
+                : 0;
+
+        const stats = {
+            fps: fps.toFixed(0),
+            avgFrame: avgFrame.toFixed(0),
+            p50: percentile(frameTimes, 50).toFixed(0),
+            p95: percentile(frameTimes, 95).toFixed(0),
+            p99: percentile(frameTimes, 99).toFixed(0),
+            tiles: getVisibleTileCount()
+        };
+
+        const classification = classifyStats(stats);
+        stats.env = classification;
+        stats.envInfo = describeClassification(classification);
+        return stats;
+    }
+
+    function describeClassification(envLabel) {
+        const ENV_DESCRIPTIONS = {
+            EXCELLENT: {
+                label: "Excellent",
+                color: "#22c55e",
+                description: "Smooth rendering at vsync. No perceptible lag or jitter. Suitable for all interactive workloads."
+            },
+
+            GOOD: {
+                label: "Good",
+                color: "#84cc16",
+                description: "Minor frame variance. Interaction is fluid. Occasional minor stutter may occur under load but overall experience is solid."
+            },
+
+            DEGRADED: {
+                label: "Degraded",
+                color: "#f59e0b",
+                description: "Noticeable frame drops and jitter. Interaction feels inconsistent. Suitable for light use only. Typical of constrained GPU or mild virtualization overhead."
+            },
+
+            POOR: {
+                label: "Poor",
+                color: "#f97316",
+                description: "Severe stuttering and lag. Interaction is difficult. Often caused by lack of GPU acceleration or heavy virtualization throttling."
+            },
+
+            BROKEN: {
+                label: "Broken",
+                color: "#ef4444",
+                description: "Rendering loop is effectively stalled. Frames delayed by hundreds or thousands of milliseconds. Not usable for any interactive scenario. Typical of extreme VDI throttling or blocked UI thread."
+            }
+        };
+
+        return ENV_DESCRIPTIONS[envLabel];
+    }
+
+    // ------------------------------------------------------------
+    // Debug tile extents
+    // ------------------------------------------------------------
+
+    function drawTileExtents() {
+      debugLayer.clearLayers();
+
+      const bounds = map.getPixelBounds();
+      const tileSize = 256;
+      const zoom = map.getZoom();
+
+      const nwTile = bounds.min.divideBy(tileSize).floor();
+      const seTile = bounds.max.divideBy(tileSize).floor();
+
+      for (let x = nwTile.x; x <= seTile.x; x++) {
+        for (let y = nwTile.y; y <= seTile.y; y++) {
+
+          const nwPoint = L.point(x * tileSize, y * tileSize);
+          const sePoint = L.point(
+            (x + 1) * tileSize,
+            (y + 1) * tileSize
+          );
+
+          const nwLatLng = map.unproject(nwPoint, zoom);
+          const seLatLng = map.unproject(sePoint, zoom);
+
+          const bounds = L.latLngBounds(nwLatLng, seLatLng);
+
+          L.rectangle(bounds, {
+            color: "white",
+            weight: 1,
+            fillOpacity: 0
+          }).addTo(debugLayer);
+
+          // tile label
+          /*
+          const center = bounds.getCenter();
+
+          L.marker(center, {
+            interactive: false,
+            icon: L.divIcon({
+              className: "tile-label",
+              html: `${zoom}/${x}/${y}`
+            })
+          }).addTo(debugLayer);
+          */
+        }
+      }
+    }
+
+    map.on("moveend", drawTileExtents);
+    drawTileExtents();
+   
+    // ------------------------------------------------------------
+    // Tile statistics
+    // ------------------------------------------------------------
+
+    function getVisibleTileCount() {
+        const bounds = map.getPixelBounds();
+        const tileSize = 256;
+        const nwTile = bounds.min.divideBy(tileSize).floor();
+        const seTile = bounds.max.divideBy(tileSize).floor();
+        const tilesX = (seTile.x - nwTile.x) + 1;
+        const tilesY = (seTile.y - nwTile.y) + 1;
+
+        return tilesX * tilesY;
+    }
+
+    // ------------------------------------------------------------
+    // Statistics
+    // ------------------------------------------------------------
+
+    function percentile(values, p) {
+      if (!values.length) {
+        return 0;
+      }
+
+      const sorted = [...values].sort((a, b) => a - b);
+
+      const index = Math.floor((p / 100) * sorted.length);
+
+      return sorted[Math.min(index, sorted.length - 1)];
+    }
+
+    function average(values) {
+      if (!values.length) {
+        return 0;
+      }
+
+      return (
+        values.reduce((sum, value) => sum + value, 0) /
+        values.length
+      );
+    }
+
+    // ------------------------------------------------------------
+    // Overlay
+    // ------------------------------------------------------------
+
+    function updateOverlay() {
+
+      const stats = computeStats();
+
+      const overlay = document.getElementById("overlay");
+
+      const env = stats.envInfo;
+
+      overlay.innerHTML = `
+        <div style="margin-bottom:6px;">
+          <strong style="color:${env.color}">
+            ${env.label}
+          </strong>
+        </div>
+
+        <table class="perf-table">
+          <tr>
+            <td>FPS</td>
+            <td>${stats.fps}</td>
+          </tr>
+
+          <tr>
+            <td>Frame avg</td>
+            <td>${stats.avgFrame} ms</td>
+          </tr>
+
+          <tr>
+            <td>p50</td>
+            <td>${stats.p50} ms</td>
+          </tr>
+
+          <tr>
+            <td>p95</td>
+            <td>${stats.p95} ms</td>
+          </tr>
+
+          <tr>
+            <td>p99</td>
+            <td>${stats.p99} ms</td>
+          </tr>
+
+          <tr>
+            <td>Tiles</td>
+            <td>${stats.tiles}</td>
+          </tr>
+        </table>
+      `;
+
+      statsLog.push({
+        time: new Date().toISOString(),
+        fps: stats.fps,
+        avgFrame: stats.avgFrame,
+        p50: stats.p50,
+        p95: stats.p95,
+        p99: stats.p99,
+        tiles: stats.tiles,
+        env: stats.env,
+        envLabel: stats.envInfo.label,
+        envDescription: stats.envInfo.description
+      });
+    }
+
+    setInterval(updateOverlay, 1000);
+
+    // ------------------------------------------------------------
+    // Export stats
+    // ------------------------------------------------------------
+
+    document
+      .getElementById("exportBtn")
+      .addEventListener("click", () => {
+
+        const blob = new Blob(
+          [JSON.stringify(statsLog, null, 2)],
+          {
+            type: "application/json"
+          }
+        );
+
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement("a");
+
+        link.href = url;
+        link.download = "leaflet_perf_stats.json";
+
+        link.click();
+
+        URL.revokeObjectURL(url);
+      });
+
+    // ------------------------------------------------------------
+    // WebGL diagnostics
+    // ------------------------------------------------------------
+
+    const canvas = document.createElement("canvas");
+
+    const gl =
+      canvas.getContext("webgl") ||
+      canvas.getContext("experimental-webgl");
+
+    console.log("WebGL supported:", !!gl);
+
+    if (gl) {
+      console.log(
+        "Renderer:",
+        gl.getParameter(gl.RENDERER)
+      );
+
+      console.log(
+        "Version:",
+        gl.getParameter(gl.VERSION)
+      );
+    }
+
+    // ------------------------------------------------------------
+    // Utility
+    // ------------------------------------------------------------
+
+    function tileKey(coords) {
+      return `${coords.z}/${coords.x}/${coords.y}`;
+    }
+  </script>
+</body>
